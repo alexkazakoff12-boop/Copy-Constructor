@@ -113,17 +113,15 @@ async def extract_filters(question: str, programs: list[str]):
     if not isinstance(data, dict):
         raise ValueError("unsupported question")
 
-    names = {name.casefold(): name for name in programs}
-    raw_program = data.get("program")
-    if raw_program is not None:
-        if not isinstance(raw_program, str) or raw_program.casefold() not in names:
-            raise ValueError("unknown program")
-        program = names[raw_program.casefold()]
-        if not mentions_program(question, program, programs):
-            # Не подставляем выдуманное моделью название программы.
-            raise ValueError("program not found in question")
-    else:
-        program = None
+    mentioned = [
+        name for name in programs
+        if mentions_program(question, name, programs)
+    ]
+    if len(mentioned) > 1:
+        raise ValueError("ambiguous program")
+    if data.get("program") is not None and not mentioned:
+        raise ValueError("program not found in question")
+    program = mentioned[0] if mentioned else None
 
     year = data.get("year")
     if isinstance(year, str) and re.fullmatch(r"20\d{2}", year):
@@ -194,8 +192,13 @@ async def chat(request: ChatRequest):
 
     rows = [[r["program"], r["year"], r["status"], r["applications"]] for r in records]
     total = sum(r["applications"] for r in records)
+    unit = {
+        "подано": "поданных заявлений",
+        "зачислен": "зачислений",
+        "отклонено": "отклонённых заявлений",
+    }.get(filters[2], "записей")
     return result(
-        answer=f"По доступным агрегированным данным: {total} записей. Детали в таблице.",
+        answer=f"По доступным агрегированным данным: {total} {unit}. Детали в таблице.",
         sql=SQL,
         columns=["Программа", "Год", "Статус", "Количество"],
         rows=rows,
