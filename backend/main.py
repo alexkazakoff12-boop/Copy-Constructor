@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+from grades import grade_chat
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -154,7 +156,13 @@ async def health():
 async def chat(request: ChatRequest):
     if not OLLAMA_URL or not OLLAMA_MODEL:
         return result(error="Укажите OLLAMA_URL и OLLAMA_MODEL в backend/.env.")
-
+    
+    if re.search(r"оцен|средн.{0,15}балл|успева", request.question.casefold()):
+        return await grade_chat(
+            request.question, app.state.pool, app.state.http,
+            OLLAMA_URL, OLLAMA_MODEL,
+        )
+    
     try:
         async with app.state.pool.acquire() as conn:
             async with conn.transaction(readonly=True):
