@@ -9,6 +9,8 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
+from decimal import Decimal
+from sql_guard import UnsafeSQL, validate_sql
 
 from grades import grade_chat
 
@@ -203,3 +205,136 @@ async def chat(request: ChatRequest):
         columns=["Программа", "Год", "Статус", "Количество"],
         rows=rows,
     )
+
+
+SQL_SYSTEM = """Преобразуй вопрос в один PostgreSQL SELECT. Верни только SQL без Markdown.
+Доступны только:
+public.admissions_summary(admission_year, program_id, status, total)
+public.programs(id, name) — соединение по admissions_summary.program_id = programs.id
+public.grade_summary(course, year, semester, grades_count, average_grade)
+
+Для количества заявлений используй SUM(total), а не COUNT(*).
+Для среднего балла по семестрам используй
+ROUND(SUM(average_grade * grades_count) / SUM(grades_count), 2).
+Статусы: 'подано', 'зачислен', 'отклонено'.
+Не используй SELECT *, CTE, подзапросы, LIMIT и другие таблицы.
+Если вопрос называет программу, связывай admissions_summary с programs через JOIN.
+Не используй SELECT внутри скобок.
+
+Пример для вопроса «Сколько заявлений подано на Экономику в 2026 году?»:
+SELECT SUM(s.total) AS total
+FROM admissions_summary AS s
+JOIN programs AS p ON p.id = s.program_id
+WHERE s.admission_year = 2026
+  AND p.name = 'Экономика'
+  AND s.status = 'подано'
+
+Названия программ в таблице programs.name записаны строго так:
+Экономика
+Финансы и кредит
+Прикладная информатика
+Программная инженерия
+Прикладная математика
+
+Вопрос может использовать другое склонение названия. В SQL всегда подставляй точное название из списка.
+Например, «на Прикладную информатику» означает p.name = 'Прикладная информатика'.
+Не копируй склонённое название из вопроса в SQL.
+"""
+
+
+@app.post("/chat-sql")
+async def chat_sql(request: ChatRequest):
+    if not OLLAMA_URL or not OLLAMA_MODEL:
+        return result(error="Настройки Ollama не заполнены.")
+
+    messages = [
+        {"role": "system", "content": SQL_SYSTEM},
+        {"role": "user", "content": request.question},
+    ]
+
+    for attempt in range(2):
+        try:
+            response = await app.state.http.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": OLLAMA_MODEL,
+                    "stream": False,
+                    "options": {"temperature": 0},
+                    "messages": messages,
+                },
+            )
+            response.raise_for_status()
+            raw = response.json()["message"]["content"].strip()
+            raw = re.sub(r"^```(?:sql)?\s*|\s*```$", "", raw, flags=re.I)
+            logger.info("Model SQL candidate: %s", raw)
+            checked_sql = validate_sql(raw)
+
+        except UnsafeSQL as exc:
+            logger.info("Rejected model SQL: %s", exc)
+            if attempt == 0:
+                messages.extend([
+                    {"role": "assistant", "content": raw},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Этот SQL отклонён: {exc}. Исправь его. "
+                            "Ответь только одним допустимым SELECT."
+                        ),
+                    },
+                ])
+                continue
+            return result(error="Модель предложила недопустимый SQL.")
+
+        except Exception:
+            logger.exception("SQL generation failed")
+            return result(error="Не удалось получить SQL от модели.")
+
+        try:
+            async with app.state.pool.acquire() as conn:
+                async with conn.transaction(readonly=True):
+                    await conn.execute("SET LOCAL statement_timeout = '3000ms'")
+                    records = await conn.fetch(checked_sql)
+        except Exception:
+            logger.exception("Generated SQL failed")
+            return result(error="Запрос модели не выполнился в БД.")
+
+        empty_result = not records or (
+            len(records) == 1
+            and len(records[0]) == 1
+            and records[0][0] is None
+        )
+
+        if empty_result and attempt == 0:
+            messages.extend([
+                {"role": "assistant", "content": raw},
+                {
+                    "role": "user",
+                    "content": (
+                        "Запрос не нашёл данных. Проверь точное написание "
+                        "программы и статуса в SQL. Например, название "
+                        "'Прикладная информатика' нельзя склонять. "
+                        "Исправь SQL и ответь только одним SELECT."
+                    ),
+                },
+            ])
+            continue
+
+        if empty_result:
+            return result(answer="По запросу данных нет.", sql=checked_sql)
+
+        columns = list(records[0].keys())
+        rows = [
+            [
+                float(value) if isinstance(value, Decimal) else value
+                for value in row.values()
+            ]
+            for row in records
+        ]
+        answer = (
+            f"Результат: {rows[0][0]}."
+            if len(rows) == 1 and len(columns) == 1
+            else f"Нашёл {len(rows)} строк. Подробности в таблице."
+        )
+        return result(
+            answer=answer, sql=checked_sql, columns=columns, rows=rows
+        )

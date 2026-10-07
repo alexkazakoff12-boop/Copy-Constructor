@@ -1,5 +1,5 @@
 // Vite перенаправляет /api/chat на FastAPI /chat при локальной разработке.
-const API_URL = '/api/chat'
+const API_URL = '/api/chat-sql'
 
 export async function sendQuestion(question) {
   let response
