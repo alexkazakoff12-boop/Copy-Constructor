@@ -38,11 +38,11 @@ function App() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="bg-white p-6 rounded-lg shadow-md border border-gray-100">
             <h3 className="font-bold text-lg mb-2 text-gray-800">Факультеты</h3>
-            <p className="text-gray-500">12 факультетов</p>
+            <p className="text-gray-500">10 факультетов</p>
           </div>
           <div className="bg-white p-6 rounded-lg shadow-md border border-gray-100">
             <h3 className="font-bold text-lg mb-2 text-gray-800">Студенты</h3>
-            <p className="text-gray-500">15 000+ учащихся</p>
+            <p className="text-gray-500">10 000+ учащихся</p>
           </div>
           <div className="bg-white p-6 rounded-lg shadow-md border border-gray-100">
             <h3 className="font-bold text-lg mb-2 text-gray-800">Преподаватели</h3>
